@@ -32,9 +32,6 @@ func TestTaskStatusTransitions(t *testing.T) {
 	if !platform.StatusPaused.CanResume() {
 		t.Fatal("paused should resume")
 	}
-	if platform.StatusSettled.CanStart() {
-		// settled uses retry, not start directly in CanStart
-	}
 	if !platform.StatusSettled.CanRetry() {
 		t.Fatal("settled should retry")
 	}
@@ -75,5 +72,44 @@ func TestJSONPayload(t *testing.T) {
 	raw := platform.JSONPayload(map[string]any{"a": 1})
 	if len(raw) == 0 {
 		t.Fatal("empty")
+	}
+}
+
+func TestSandboxPolicies(t *testing.T) {
+	for _, cat := range platform.AllCategories() {
+		pol := platform.DefaultSandboxPolicy(cat, "")
+		if pol.Category != cat {
+			t.Fatalf("expected category %s, got %s", cat, pol.Category)
+		}
+		if !pol.ForbidDockerSock {
+			t.Fatalf("docker sock must be forbidden for %s", cat)
+		}
+		if pol.DefaultUser != "ctf" {
+			t.Fatalf("expected user ctf, got %s", pol.DefaultUser)
+		}
+		if pol.MountWorkspace != "/workspace" {
+			t.Fatalf("expected /workspace mount, got %s", pol.MountWorkspace)
+		}
+
+		// Pwn and Reverse get SYS_PTRACE; others do not
+		if cat == platform.CategoryPwn || cat == platform.CategoryReverse {
+			if !pol.AllowPtrace {
+				t.Fatalf("expected ptrace allowed for %s", cat)
+			}
+			foundPtrace := false
+			for _, cap := range pol.Capabilities {
+				if cap == "SYS_PTRACE" {
+					foundPtrace = true
+					break
+				}
+			}
+			if !foundPtrace {
+				t.Fatalf("expected SYS_PTRACE cap for %s", cat)
+			}
+		} else {
+			if pol.AllowPtrace {
+				t.Fatalf("ptrace must not be allowed for %s", cat)
+			}
+		}
 	}
 }

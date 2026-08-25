@@ -4,29 +4,33 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"sync"
 
 	"github.com/Xh12321/ctftools/internal/eventhub"
 	"github.com/Xh12321/ctftools/internal/platform"
+	"github.com/Xh12321/ctftools/internal/sandbox"
 	"github.com/Xh12321/ctftools/internal/storage"
+	"github.com/Xh12321/ctftools/internal/workspace"
 )
 
 // Sentinel errors matching observed daemon behaviour.
 var (
-	ErrTaskNotPausable     = errors.New("task is not pausable")
-	ErrTaskNotResumable    = errors.New("task is not resumable")
-	ErrTaskNotRetryable    = errors.New("task is not retryable")
-	ErrTaskNotDeletable    = errors.New("task is not deletable")
-	ErrSandboxNotClosable  = errors.New("sandbox is not closable")
-	ErrFlagNotReviewable   = errors.New("flag is not reviewable")
-	ErrPromptLocked        = errors.New("the task prompt cannot be changed while the agent is running")
-	ErrAttachmentsLocked   = errors.New("attachments are locked while the agent is running")
-	ErrAlreadyRunning      = errors.New("task is already running")
-	ErrTaskNotFound        = errors.New("task not found")
+	ErrTaskNotPausable   = errors.New("task is not pausable")
+	ErrTaskNotResumable  = errors.New("task is not resumable")
+	ErrTaskNotRetryable  = errors.New("task is not retryable")
+	ErrTaskNotDeletable  = errors.New("task is not deletable")
+	ErrSandboxNotClosable = errors.New("sandbox is not closable")
+	ErrFlagNotReviewable = errors.New("flag is not reviewable")
+	ErrPromptLocked      = errors.New("the task prompt cannot be changed while the agent is running")
+	ErrAttachmentsLocked = errors.New("attachments are locked while the agent is running")
+	ErrAlreadyRunning    = errors.New("task is already running")
+	ErrTaskNotFound      = errors.New("task not found")
 )
 
 // Runner executes the agent loop for a task. Production will use Pi RPC;
-// tests and Milestone 1 use FakeRunner.
+// tests and Milestone 1/2 use FakeRunner.
 type Runner interface {
 	// Run executes until the context is cancelled or the run finishes.
 	// Implementations must publish lifecycle events through the service callbacks
@@ -37,11 +41,13 @@ type Runner interface {
 // EmitFunc appends and publishes a task event.
 type EmitFunc func(source, eventType, turnID, toolCallID string, payload any) (platform.TaskEvent, error)
 
-// Service owns task lifecycle orchestration on top of storage + event hub.
+// Service owns task lifecycle orchestration on top of storage, workspace, sandbox and event hub.
 type Service struct {
 	store  *storage.Store
 	hub    *eventhub.Hub
 	runner Runner
+	wsMgr  *workspace.Manager
+	sbMgr  sandbox.Manager
 
 	mu       sync.Mutex
 	cancels  map[string]context.CancelFunc
@@ -49,28 +55,50 @@ type Service struct {
 	findings map[string]map[string]platform.FlagFinding // taskID -> flagID -> finding
 }
 
-// NewService constructs an agent service.
-func NewService(store *storage.Store, hub *eventhub.Hub, runner Runner) *Service {
-	if runner == nil {
-		runner = NewFakeRunner(FakeRunnerOptions{})
+// NewService constructs an agent service with workspace and sandbox managers.
+func NewService(store *storage.Store, hub *eventhub.Hub, runner Runner, wsMgr *workspace.Manager, sbMgr sandbox.Manager) *Service {
+	if wsMgr == nil {
+		tmpDir, _ := os.MkdirTemp("", "ctf-ws-*")
+		wsMgr, _ = workspace.New(workspace.Options{BaseDir: tmpDir})
 	}
+	if sbMgr == nil {
+		sbMgr = sandbox.NewMockManager()
+	}
+	if runner == nil {
+		runner = NewFakeRunner(FakeRunnerOptions{Workspace: wsMgr})
+	}
+
 	return &Service{
 		store:    store,
 		hub:      hub,
 		runner:   runner,
+		wsMgr:    wsMgr,
+		sbMgr:    sbMgr,
 		cancels:  make(map[string]context.CancelFunc),
 		running:  make(map[string]struct{}),
 		findings: make(map[string]map[string]platform.FlagFinding),
 	}
 }
 
-// CreateTask creates a task and publishes creation events.
+// CreateTask creates a task, initializes its workspace, and publishes creation events.
 func (s *Service) CreateTask(ctx context.Context, in platform.CreateTask) (platform.Task, error) {
 	task, err := s.store.CreateTask(ctx, in)
 	if err != nil {
 		return platform.Task{}, err
 	}
-	// Replay creation events to hub for any early subscriber (usually none).
+
+	// Initialize disk workspace directory with standard layout.
+	if err := s.wsMgr.InitWorkspace(task.ID); err != nil {
+		return platform.Task{}, fmt.Errorf("init task workspace: %w", err)
+	}
+
+	if _, err := s.emit(ctx, task.ID, platform.SourceSystem, platform.EventWorkspaceInitialized, "", "", map[string]any{
+		"path": s.wsMgr.WorkspacePath(task.ID),
+	}); err != nil {
+		return platform.Task{}, err
+	}
+
+	// Replay creation events to hub for any early subscriber.
 	events, err := s.store.ListEvents(ctx, task.ID, 0, 100)
 	if err == nil {
 		s.hub.PublishAll(events)
@@ -114,7 +142,7 @@ func (s *Service) emit(ctx context.Context, taskID, source, eventType, turnID, t
 }
 
 // Start transitions queued/failed/cancelled → provisioning → running and
-// launches the runner in the background.
+// provisions a sandbox adhering to category security policies.
 func (s *Service) Start(ctx context.Context, taskID string) (platform.Task, error) {
 	s.mu.Lock()
 	if _, ok := s.running[taskID]; ok {
@@ -131,9 +159,21 @@ func (s *Service) Start(ctx context.Context, taskID string) (platform.Task, erro
 		return platform.Task{}, ErrAlreadyRunning
 	}
 	if !task.Status.CanStart() && task.Status != platform.StatusPaused {
-		// allow retry-like start from failed/cancelled/queued only
 		if !task.Status.CanRetry() && task.Status != platform.StatusQueued {
 			return platform.Task{}, fmt.Errorf("%w (current status: %s)", ErrTaskNotRetryable, task.Status)
+		}
+	}
+
+	// 1. Resolve sandbox policy for category
+	policy := platform.DefaultSandboxPolicy(task.Category, task.Image)
+
+	// Report capability degradation warning for pwn/reverse with SYS_PTRACE
+	if policy.AllowPtrace {
+		if _, err := s.emit(ctx, taskID, platform.SourceSandbox, platform.EventSandboxDegraded, "", "", map[string]any{
+			"warning":  "SYS_PTRACE capability granted for binary debugging",
+			"category": task.Category,
+		}); err != nil {
+			return platform.Task{}, err
 		}
 	}
 
@@ -145,8 +185,13 @@ func (s *Service) Start(ctx context.Context, taskID string) (platform.Task, erro
 		EventType:   platform.EventTaskProvisioning,
 		EventSource: platform.SourceSandbox,
 		Payload: map[string]any{
-			"status": platform.StatusProvisioning,
-			"image":  task.Image,
+			"status":        platform.StatusProvisioning,
+			"image":         policy.Image,
+			"cpuQuotaCores": policy.CPUQuotaCores,
+			"memoryLimitMB": policy.MemoryLimitMB,
+			"pidsLimit":     policy.PidsLimit,
+			"capabilities":  policy.Capabilities,
+			"allowNetwork":  policy.AllowNetwork,
 		},
 	})
 	if err != nil {
@@ -154,9 +199,23 @@ func (s *Service) Start(ctx context.Context, taskID string) (platform.Task, erro
 	}
 	s.hub.Publish(ev)
 
-	// Fake sandbox start.
-	containerID := "fake-" + task.ID[:8]
-	runtime := "fake"
+	// 2. Provision sandbox instance
+	sbInst, err := s.sbMgr.Provision(ctx, sandbox.Config{
+		TaskID:       task.ID,
+		WorkspaceDir: s.wsMgr.WorkspacePath(task.ID),
+		Policy:       policy,
+	})
+	if err != nil {
+		return platform.Task{}, fmt.Errorf("provision sandbox: %w", err)
+	}
+
+	// 3. Start sandbox instance
+	if err := s.sbMgr.Start(ctx, sbInst.ID); err != nil {
+		return platform.Task{}, fmt.Errorf("start sandbox: %w", err)
+	}
+
+	containerID := sbInst.ID
+	runtime := sbInst.Runtime
 	task, ev, err = s.store.ApplyStatusUpdate(ctx, taskID, storage.StatusUpdate{
 		To:          platform.StatusRunning,
 		From:        []platform.TaskStatus{platform.StatusProvisioning},
@@ -168,6 +227,7 @@ func (s *Service) Start(ctx context.Context, taskID string) (platform.Task, erro
 			"status":      platform.StatusRunning,
 			"runtime":     runtime,
 			"containerId": containerID,
+			"image":       policy.Image,
 		},
 	})
 	if err != nil {
@@ -373,7 +433,7 @@ func (s *Service) Retry(ctx context.Context, taskID string) (platform.Task, erro
 	return s.Start(ctx, taskID)
 }
 
-// CloseSandbox clears container metadata for a finished task.
+// CloseSandbox stops sandbox container and clears container metadata for a finished task.
 func (s *Service) CloseSandbox(ctx context.Context, taskID string) (platform.Task, error) {
 	task, err := s.GetTask(ctx, taskID)
 	if err != nil {
@@ -382,6 +442,11 @@ func (s *Service) CloseSandbox(ctx context.Context, taskID string) (platform.Tas
 	if !task.Status.CanCloseSandbox() {
 		return platform.Task{}, fmt.Errorf("%w (current status: %s)", ErrSandboxNotClosable, task.Status)
 	}
+
+	if task.ContainerID != "" {
+		_ = s.sbMgr.Stop(ctx, task.ContainerID)
+	}
+
 	empty := ""
 	task, ev, err := s.store.ApplyStatusUpdate(ctx, taskID, storage.StatusUpdate{
 		To:          task.Status,
@@ -413,7 +478,6 @@ func (s *Service) ReviewFlag(ctx context.Context, taskID string, fb platform.Fla
 	findings := s.findings[taskID]
 	finding, ok := findings[fb.FlagID]
 	if !ok {
-		// Allow review by value match for convenience.
 		for _, f := range findings {
 			if fb.Value != "" && f.Value == fb.Value {
 				finding = f
@@ -450,19 +514,17 @@ func (s *Service) ReviewFlag(ctx context.Context, taskID string, fb platform.Fla
 	s.mu.Unlock()
 
 	if _, err := s.emit(ctx, taskID, platform.SourceUser, platform.EventFlagReviewed, "", "", map[string]any{
-		"flagId":  finding.ID,
-		"value":   finding.Value,
-		"action":  action,
-		"status":  status,
-		"note":    fb.Note,
+		"flagId":   finding.ID,
+		"value":    finding.Value,
+		"action":   action,
+		"status":   status,
+		"note":     fb.Note,
 		"verified": finding.Verified,
 	}); err != nil {
 		return platform.Task{}, err
 	}
 
 	if action == platform.FlagAccept {
-		// Freeze agent to avoid further spend when still active.
-		// The runner may settle concurrently; treat that race as success.
 		cur, err := s.GetTask(ctx, taskID)
 		if err != nil {
 			return platform.Task{}, err
@@ -472,7 +534,6 @@ func (s *Service) ReviewFlag(ctx context.Context, taskID string, fb platform.Fla
 			if perr == nil {
 				return paused, nil
 			}
-			// Lost the race to settle/cancel — re-read and accept current state.
 			cur, err = s.GetTask(ctx, taskID)
 			if err != nil {
 				return platform.Task{}, err
@@ -526,6 +587,84 @@ func (s *Service) UpdatePrompt(ctx context.Context, taskID, prompt string) (plat
 	s.hub.Publish(ev)
 	return task, nil
 }
+
+// SaveAttachment saves an uploaded attachment stream into the task's workspace.
+func (s *Service) SaveAttachment(ctx context.Context, taskID, filename string, r io.Reader, size int64) (platform.FileInfo, error) {
+	task, err := s.GetTask(ctx, taskID)
+	if err != nil {
+		return platform.FileInfo{}, err
+	}
+	if task.Status.IsActive() {
+		return platform.FileInfo{}, ErrAttachmentsLocked
+	}
+
+	info, err := s.wsMgr.SaveAttachment(taskID, filename, r, size)
+	if err != nil {
+		return platform.FileInfo{}, err
+	}
+
+	if _, err := s.emit(ctx, taskID, platform.SourceUser, platform.EventAttachmentUploaded, "", "", map[string]any{
+		"path": info.Path,
+		"name": info.Name,
+		"size": info.Size,
+	}); err != nil {
+		return platform.FileInfo{}, err
+	}
+
+	return info, nil
+}
+
+// ListFiles returns all files within a task workspace.
+func (s *Service) ListFiles(ctx context.Context, taskID string) ([]platform.FileInfo, error) {
+	if _, err := s.GetTask(ctx, taskID); err != nil {
+		return nil, err
+	}
+	return s.wsMgr.ListFiles(taskID)
+}
+
+// ReadFile reads a file from the task workspace.
+func (s *Service) ReadFile(ctx context.Context, taskID, relPath string) ([]byte, platform.FileInfo, error) {
+	if _, err := s.GetTask(ctx, taskID); err != nil {
+		return nil, platform.FileInfo{}, err
+	}
+	return s.wsMgr.ReadFile(taskID, relPath)
+}
+
+// GetWriteup retrieves the WRITEUP.md content.
+func (s *Service) GetWriteup(ctx context.Context, taskID string) (platform.Writeup, error) {
+	if _, err := s.GetTask(ctx, taskID); err != nil {
+		return platform.Writeup{}, err
+	}
+	return s.wsMgr.GetWriteup(taskID)
+}
+
+// SaveWriteup updates the task WRITEUP.md file and emits an event.
+func (s *Service) SaveWriteup(ctx context.Context, taskID, content string) error {
+	if _, err := s.GetTask(ctx, taskID); err != nil {
+		return err
+	}
+	if err := s.wsMgr.SaveWriteup(taskID, content); err != nil {
+		return err
+	}
+	_, _ = s.emit(ctx, taskID, platform.SourceUser, platform.EventWriteupUpdated, "", "", map[string]any{
+		"length": len(content),
+	})
+	return nil
+}
+
+// ExportZip writes a zip archive of the task workspace to w.
+func (s *Service) ExportZip(ctx context.Context, taskID string, w io.Writer) error {
+	if _, err := s.GetTask(ctx, taskID); err != nil {
+		return err
+	}
+	return s.wsMgr.ExportZip(taskID, w)
+}
+
+// Workspace returns the workspace manager.
+func (s *Service) Workspace() *workspace.Manager { return s.wsMgr }
+
+// Sandbox returns the sandbox manager.
+func (s *Service) Sandbox() sandbox.Manager { return s.sbMgr }
 
 // Hub returns the event hub (for API layer subscriptions).
 func (s *Service) Hub() *eventhub.Hub { return s.hub }

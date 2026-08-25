@@ -207,18 +207,20 @@ MCP 工具
 
 仓库中的 `CTF-BTFly.exe` 和 `ctfagent-daemon.exe` 是 Windows 编译产物，只作为现有界面与接口行为参考；后续开发以可审计、可跨平台构建的源码为准。项目分析、已确认的 daemon 契约和分阶段路线见 [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)。
 
-### Milestone 1（已落地）
+### Milestone 1 & 2（已落地）
 
-无 Docker / 无真实模型即可测试的 Go daemon 核心已在源码树中：
+无 Docker / 无真实模型即可测试的 Go daemon 核心与沙箱工作区控制已在源码树中：
 
 | 路径 | 职责 |
 | --- | --- |
 | `cmd/ctfagent-daemon` | 进程入口 |
-| `internal/platform` | 题型、状态机、事件常量、DTO |
+| `internal/platform` | 题型、状态机、事件常量、DTO、SandboxPolicy、FileInfo |
 | `internal/storage` | SQLite 任务/事件/用量/设置 |
 | `internal/eventhub` | 按任务订阅与 `after` 序号过滤 |
-| `internal/agent` | 生命周期 + **FakeRunner** |
-| `internal/api` | 本地 HTTP API（Bearer token） |
+| `internal/workspace` | 工作区路径规范化、防遍历/逃逸、附件/Writeup/ZIP 归档 |
+| `internal/sandbox` | 六大题型沙箱策略、CPU/内存/PID限制、SYS_PTRACE 降级审计 |
+| `internal/agent` | 生命周期编排 + **FakeRunner**（自动沉淀 solve.py 与 Writeup） |
+| `internal/api` | 本地 HTTP API（含 /files、/file、/writeup、/download、/attachments） |
 | `vendor/` | 离线依赖（纯 Go SQLite） |
 
 ```bash
@@ -227,7 +229,7 @@ go build -mod=mod -o bin/ctfagent-daemon ./cmd/ctfagent-daemon
 ./bin/ctfagent-daemon -data-dir ~/.ctf-btfly -addr 127.0.0.1:7521
 ```
 
-竖切片说明与接口表见 [`docs/MILESTONE1.md`](docs/MILESTONE1.md)。
+竖切片与详细说明见 [`docs/MILESTONE1.md`](docs/MILESTONE1.md) 与 [`docs/MILESTONE2.md`](docs/MILESTONE2.md)。
 
 镜像构建所需的公共规则和六个方向 Skill 位于 `agents/` 与 `skills/`。在安装 Docker 且已配置 Pi Agent 包源的开发机上，可以从仓库根目录执行：
 
@@ -235,4 +237,4 @@ go build -mod=mod -o bin/ctfagent-daemon ./cmd/ctfagent-daemon
 ./build.ps1 -Version 0.1.0
 ```
 
-下一条竖切片将接入工作区与 Docker 沙箱（Milestone 2），再接 Pi RPC 与模型网关（Milestone 3）。
+下一条竖切片将接入 Pi RPC 与模型网关（Milestone 3）。

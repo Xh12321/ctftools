@@ -114,16 +114,16 @@ type ModelUsage struct {
 
 // ModelUsageDay aggregates usage for a calendar day.
 type ModelUsageDay struct {
-	Date                string `json:"date"`
-	RequestCount        int64  `json:"requestCount"`
-	SuccessfulRequests  int64  `json:"successfulRequests"`
-	FailedRequests      int64  `json:"failedRequests"`
-	ReportedRequests    int64  `json:"reportedRequests"`
-	InputTokens         int64  `json:"inputTokens"`
-	CachedInputTokens   int64  `json:"cachedInputTokens"`
-	OutputTokens        int64  `json:"outputTokens"`
-	ReasoningTokens     int64  `json:"reasoningTokens"`
-	TotalTokens         int64  `json:"totalTokens"`
+	Date               string `json:"date"`
+	RequestCount       int64  `json:"requestCount"`
+	SuccessfulRequests int64  `json:"successfulRequests"`
+	FailedRequests     int64  `json:"failedRequests"`
+	ReportedRequests   int64  `json:"reportedRequests"`
+	InputTokens        int64  `json:"inputTokens"`
+	CachedInputTokens  int64  `json:"cachedInputTokens"`
+	OutputTokens       int64  `json:"outputTokens"`
+	ReasoningTokens    int64  `json:"reasoningTokens"`
+	TotalTokens        int64  `json:"totalTokens"`
 }
 
 // ModelUsageSummary is the response shape for GET /api/model-usage.
@@ -173,10 +173,10 @@ type FlagFinding struct {
 
 // FlagFeedback is the operator review payload for a candidate.
 type FlagFeedback struct {
-	FlagID  string           `json:"flagId"`
-	Action  FlagReviewAction `json:"action"`
-	Note    string           `json:"note,omitempty"`
-	Value   string           `json:"value,omitempty"`
+	FlagID string           `json:"flagId"`
+	Action FlagReviewAction `json:"action"`
+	Note   string           `json:"note,omitempty"`
+	Value  string           `json:"value,omitempty"`
 }
 
 // EventList is the response for event polling.
@@ -187,6 +187,66 @@ type EventList struct {
 // TaskList is the response for listing tasks.
 type TaskList struct {
 	Tasks []Task `json:"tasks"`
+}
+
+// FileInfo represents metadata of a file or directory within a task workspace.
+type FileInfo struct {
+	Path        string    `json:"path"` // normalized relative path, e.g. "attachments/chall.py"
+	Name        string    `json:"name"`
+	Size        int64     `json:"size"`
+	IsDir       bool      `json:"isDir"`
+	ModTime     time.Time `json:"modTime"`
+	ContentType string    `json:"contentType,omitempty"`
+}
+
+// FileList is the response shape for GET /api/tasks/{id}/files.
+type FileList struct {
+	Files []FileInfo `json:"files"`
+}
+
+// FileContent is the response shape for GET /api/tasks/{id}/file.
+type FileContent struct {
+	Info        FileInfo `json:"info"`
+	ContentText string   `json:"contentText,omitempty"` // populated for text/readable files
+	IsBinary    bool     `json:"isBinary"`
+	Truncated   bool     `json:"truncated"`
+}
+
+// Writeup is the model/report shape for GET/PUT /api/tasks/{id}/writeup.
+type Writeup struct {
+	Content   string    `json:"content"`
+	UpdatedAt time.Time `json:"updatedAt"`
+	Exists    bool      `json:"exists"`
+}
+
+// SandboxPolicy represents the enforced isolation rules for a category container.
+type SandboxPolicy struct {
+	Category         Category `json:"category"`
+	Image            string   `json:"image"`
+	CPUQuotaCores    float64  `json:"cpuQuotaCores"`
+	MemoryLimitMB    int64    `json:"memoryLimitMB"`
+	PidsLimit        int64    `json:"pidsLimit"`
+	Capabilities     []string `json:"capabilities"`
+	DropCaps         []string `json:"dropCaps"`
+	AllowPtrace      bool     `json:"allowPtrace"`
+	AllowNetwork     bool     `json:"allowNetwork"`
+	DefaultUser      string   `json:"defaultUser"`
+	MountWorkspace   string   `json:"mountWorkspace"`
+	MountSkills      string   `json:"mountSkills"`
+	ReadonlySkills   bool     `json:"readonlySkills"`
+	ForbidDockerSock bool     `json:"forbidDockerSock"`
+}
+
+// SystemStatus is the response shape for GET /api/system.
+type SystemStatus struct {
+	Configured       bool                        `json:"configured"`
+	Mode             string                      `json:"mode"`
+	DockerAvailable  bool                        `json:"dockerAvailable"`
+	WorkspaceDir     string                      `json:"workspaceDir"`
+	ActiveSandboxes  int                         `json:"activeSandboxes"`
+	Settings         ExecutionSettings           `json:"settings"`
+	Queue            SchedulerStatus             `json:"queue"`
+	SandboxPolicies  map[Category]SandboxPolicy  `json:"sandboxPolicies"`
 }
 
 // NowUTC returns the current time truncated to milliseconds in UTC.

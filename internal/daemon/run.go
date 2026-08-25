@@ -15,14 +15,18 @@ import (
 	"github.com/Xh12321/ctftools/internal/api"
 	"github.com/Xh12321/ctftools/internal/eventhub"
 	"github.com/Xh12321/ctftools/internal/platform"
+	"github.com/Xh12321/ctftools/internal/sandbox"
 	"github.com/Xh12321/ctftools/internal/storage"
+	"github.com/Xh12321/ctftools/internal/workspace"
 )
 
 // Config controls daemon startup.
 type Config struct {
-	DataDir string
-	Addr    string
-	Token   string
+	DataDir      string
+	Addr         string
+	Token        string
+	DockerSocket string
+	ForceMock    bool
 	// StepDelay controls FakeRunner pacing (tests may shorten it).
 	StepDelay time.Duration
 }
@@ -39,16 +43,18 @@ func DefaultConfig() Config {
 		addr = "127.0.0.1:7521"
 	}
 	token := os.Getenv("CTF_DAEMON_TOKEN")
+	dockerSock := os.Getenv("DOCKER_HOST")
 	return Config{
-		DataDir:   dataDir,
-		Addr:      addr,
-		Token:     token,
-		StepDelay: 40 * time.Millisecond,
+		DataDir:      dataDir,
+		Addr:         addr,
+		Token:        token,
+		DockerSocket: dockerSock,
+		StepDelay:    40 * time.Millisecond,
 	}
 }
 
-// Start boots storage, the fake agent service and the HTTP API, then blocks
-// until ctx is cancelled.
+// Start boots storage, workspace, sandbox manager, fake agent service and the HTTP API,
+// then blocks until ctx is cancelled.
 func Start(ctx context.Context, cfg Config) error {
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return fmt.Errorf("data dir: %w", err)
@@ -69,6 +75,19 @@ func Start(ctx context.Context, cfg Config) error {
 	hub := eventhub.New()
 	defer hub.Close()
 
+	wsDir := filepath.Join(cfg.DataDir, "workspaces")
+	wsMgr, err := workspace.New(workspace.Options{
+		BaseDir: wsDir,
+	})
+	if err != nil {
+		return fmt.Errorf("init workspace manager: %w", err)
+	}
+
+	sbMgr := sandbox.NewManager(sandbox.Options{
+		ForceMock:    cfg.ForceMock,
+		DockerSocket: cfg.DockerSocket,
+	})
+
 	var svc *agent.Service
 	delay := cfg.StepDelay
 	if delay <= 0 {
@@ -76,13 +95,14 @@ func Start(ctx context.Context, cfg Config) error {
 	}
 	runner := agent.NewFakeRunner(agent.FakeRunnerOptions{
 		StepDelay: delay,
+		Workspace: wsMgr,
 		OnFinding: func(taskID string, f platform.FlagFinding) {
 			if svc != nil {
 				svc.RegisterFinding(taskID, f)
 			}
 		},
 	})
-	svc = agent.NewService(store, hub, runner)
+	svc = agent.NewService(store, hub, runner, wsMgr, sbMgr)
 
 	srv := api.NewServer(svc, token)
 	addr, err := srv.ListenAndServe(cfg.Addr)
@@ -92,15 +112,14 @@ func Start(ctx context.Context, cfg Config) error {
 
 	log.Printf("ctfagent-daemon listening on http://%s", addr.String())
 	log.Printf("data dir: %s", cfg.DataDir)
+	log.Printf("workspaces dir: %s", wsDir)
+	log.Printf("docker available: %v", sbMgr.DockerAvailable())
 	log.Printf("auth token stored at %s", filepath.Join(cfg.DataDir, "daemon.token"))
-	log.Printf("mode: fake-agent (Milestone 1)")
+	log.Printf("mode: fake-agent (Milestone 2)")
 
-	// Write a small runtime hint file for desktop clients.
-	runtimeInfo := fmt.Sprintf("addr=%s\ntoken_file=daemon.token\nmode=fake-agent\n", addr.String())
 	_ = os.WriteFile(filepath.Join(cfg.DataDir, "daemon.json"), []byte(fmt.Sprintf(
-		`{"addr":%q,"mode":"fake-agent","tokenFile":"daemon.token"}`+"\n", addr.String(),
+		`{"addr":%q,"mode":"fake-agent","tokenFile":"daemon.token","workspacesDir":%q}`+"\n", addr.String(), wsDir,
 	)), 0o600)
-	_ = runtimeInfo
 
 	<-ctx.Done()
 	log.Printf("shutting down...")

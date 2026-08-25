@@ -116,12 +116,14 @@ queued ──▶ provisioning ──▶ running ──▶ settled
 - ✅ FakeRunner + `internal/agent` 生命周期（start/pause/resume/abort/retry/close-sandbox/flag-feedback）。
 - ✅ 本地 HTTP API（`internal/api`）与 `cmd/ctfagent-daemon` 入口。
 - 细节见 [`docs/MILESTONE1.md`](MILESTONE1.md)。
-### Milestone 2：沙箱与工作区
+### Milestone 2：沙箱与工作区 ✅
 
-- `WorkspaceManager` 只接受规范化相对路径；拒绝 `..`、绝对路径、符号链接逃逸和重复覆盖。
-- `SandboxManager` 统一设置只读/读写挂载、CPU、内存、PID、超时、网络、capabilities、用户和 runtime。
-- 默认不挂载 Docker Socket、不使用 `--privileged`；Pwn 和动态 Reverse 使用显式策略，并在系统状态中报告降级。
-- 所有 stdout/stderr、退出码和容器 ID 写入事件。
+- ✅ `WorkspaceManager`：只接受规范化相对路径；拒绝 `..`、绝对路径、符号链接逃逸与重复覆盖；
+- ✅ 附件上传限制大小，任务处于运行状态时锁定上传，防止竞态；
+- ✅ `SandboxManager`：六大题型独立策略，统一设置 CPU、内存、PID、网络模式与能力集合；
+- ✅ 默认严禁挂载 Docker Socket、从不使用 `--privileged`；Pwn/Reverse 授予 `SYS_PTRACE` 时主动触发 `sandbox.degraded` 审计警告；
+- ✅ HTTP 接口补齐：`/files`、`/file`、`/writeup`、`/download`、`/attachments`；
+- ✅ 细节见 [`docs/MILESTONE2.md`](MILESTONE2.md)。
 
 ### Milestone 3：Pi RPC 与模型网关
 

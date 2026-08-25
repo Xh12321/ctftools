@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/Xh12321/ctftools/internal/agent"
 	"github.com/Xh12321/ctftools/internal/platform"
 	"github.com/Xh12321/ctftools/internal/storage"
+	"github.com/Xh12321/ctftools/internal/workspace"
 )
 
 // Server is the local authenticated HTTP control plane.
@@ -56,7 +59,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/tasks/{id}/retry", s.auth(s.handleRetry))
 	s.mux.HandleFunc("POST /api/tasks/{id}/close-sandbox", s.auth(s.handleCloseSandbox))
 	s.mux.HandleFunc("POST /api/tasks/{id}/flag-feedback", s.auth(s.handleFlagFeedback))
-	// SSE live events (WebSocket comes later; SSE is enough for Milestone 1 tests).
+	// Workspace & File endpoints (Milestone 2)
+	s.mux.HandleFunc("GET /api/tasks/{id}/files", s.auth(s.handleListFiles))
+	s.mux.HandleFunc("GET /api/tasks/{id}/file", s.auth(s.handleGetFile))
+	s.mux.HandleFunc("GET /api/tasks/{id}/writeup", s.auth(s.handleGetWriteup))
+	s.mux.HandleFunc("PUT /api/tasks/{id}/writeup", s.auth(s.handlePutWriteup))
+	s.mux.HandleFunc("GET /api/tasks/{id}/download", s.auth(s.handleDownload))
+	s.mux.HandleFunc("POST /api/tasks/{id}/attachments", s.auth(s.handleUploadAttachments))
+	// SSE live events
 	s.mux.HandleFunc("GET /api/tasks/{id}/stream", s.auth(s.handleStream))
 }
 
@@ -139,16 +149,37 @@ func (s *Server) handleSystem(w http.ResponseWriter, r *http.Request) {
 			queued++
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"configured": true,
-		"settings":   settings,
-		"queue": platform.SchedulerStatus{
+
+	policies := make(map[platform.Category]platform.SandboxPolicy)
+	for _, cat := range platform.AllCategories() {
+		policies[cat] = platform.DefaultSandboxPolicy(cat, "")
+	}
+
+	wsDir := ""
+	if s.svc.Workspace() != nil {
+		wsDir = s.svc.Workspace().BaseDir()
+	}
+
+	dockerAvail := false
+	if s.svc.Sandbox() != nil {
+		dockerAvail = s.svc.Sandbox().DockerAvailable()
+	}
+
+	status := platform.SystemStatus{
+		Configured:      true,
+		Mode:            "fake-agent",
+		DockerAvailable: dockerAvail,
+		WorkspaceDir:    wsDir,
+		ActiveSandboxes: active,
+		Settings:        settings,
+		Queue: platform.SchedulerStatus{
 			MaxConcurrentTasks: settings.MaxConcurrentTasks,
 			ActiveTaskCount:    active,
 			QueuedTaskCount:    queued,
 		},
-		"mode": "fake-agent",
-	})
+		SandboxPolicies: policies,
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
@@ -342,7 +373,159 @@ func (s *Server) handleFlagFeedback(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleStream is a simple SSE endpoint for live events (Milestone 1 stand-in for WS).
+// handleListFiles returns all files in task workspace.
+func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	files, err := s.svc.ListFiles(r.Context(), id)
+	if err != nil {
+		writeTaskErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, platform.FileList{Files: files})
+}
+
+// handleGetFile reads a file from task workspace.
+func (s *Server) handleGetFile(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	path := r.URL.Query().Get("path")
+	if strings.TrimSpace(path) == "" {
+		writeErr(w, http.StatusBadRequest, "query parameter 'path' is required")
+		return
+	}
+
+	data, info, err := s.svc.ReadFile(r.Context(), id, path)
+	if err != nil {
+		writeTaskErr(w, err)
+		return
+	}
+
+	if r.URL.Query().Get("raw") == "true" {
+		w.Header().Set("Content-Type", info.ContentType)
+		w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(data)
+		return
+	}
+
+	isBin := bytes.IndexByte(data, 0) != -1
+	text := ""
+	if !isBin {
+		text = string(data)
+	}
+
+	writeJSON(w, http.StatusOK, platform.FileContent{
+		Info:        info,
+		ContentText: text,
+		IsBinary:    isBin,
+		Truncated:   false,
+	})
+}
+
+// handleGetWriteup returns WRITEUP.md content.
+func (s *Server) handleGetWriteup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	wu, err := s.svc.GetWriteup(r.Context(), id)
+	if err != nil {
+		writeTaskErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, wu)
+}
+
+// handlePutWriteup saves WRITEUP.md content.
+func (s *Server) handlePutWriteup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		Content string `json:"content"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.svc.SaveWriteup(r.Context(), id, body.Content); err != nil {
+		writeTaskErr(w, err)
+		return
+	}
+	wu, err := s.svc.GetWriteup(r.Context(), id)
+	if err != nil {
+		writeTaskErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, wu)
+}
+
+// handleDownload downloads a single file or full workspace zip.
+func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	path := r.URL.Query().Get("path")
+
+	if strings.TrimSpace(path) == "" {
+		// Download entire workspace as zip
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"task-%s-workspace.zip\"", id[:8]))
+		if err := s.svc.ExportZip(r.Context(), id, w); err != nil {
+			// Headers may already be sent if error occurs during streaming
+			return
+		}
+		return
+	}
+
+	// Download specific file
+	data, info, err := s.svc.ReadFile(r.Context(), id, path)
+	if err != nil {
+		writeTaskErr(w, err)
+		return
+	}
+
+	filename := filepath.Base(info.Path)
+	w.Header().Set("Content-Type", info.ContentType)
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size, 10))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+// handleUploadAttachments receives multipart/form-data files and saves to workspace attachments.
+func (s *Server) handleUploadAttachments(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	// Limit to 50MB
+	if err := r.ParseMultipartForm(50 << 20); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("parse multipart form: %v", err))
+		return
+	}
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
+
+	if r.MultipartForm == nil || len(r.MultipartForm.File) == 0 {
+		writeErr(w, http.StatusBadRequest, "no files uploaded")
+		return
+	}
+
+	var uploaded []platform.FileInfo
+	for _, fileHeaders := range r.MultipartForm.File {
+		for _, fh := range fileHeaders {
+			file, err := fh.Open()
+			if err != nil {
+				writeErr(w, http.StatusInternalServerError, fmt.Sprintf("open uploaded file: %v", err))
+				return
+			}
+			info, err := s.svc.SaveAttachment(r.Context(), id, fh.Filename, file, fh.Size)
+			_ = file.Close()
+			if err != nil {
+				writeTaskErr(w, err)
+				return
+			}
+			uploaded = append(uploaded, info)
+		}
+	}
+
+	writeJSON(w, http.StatusCreated, platform.FileList{Files: uploaded})
+}
+
+// handleStream is a simple SSE endpoint for live events.
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if _, err := s.svc.GetTask(r.Context(), id); err != nil {
@@ -406,7 +589,7 @@ func writeSSE(w http.ResponseWriter, ev platform.TaskEvent) error {
 
 func writeTaskErr(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, agent.ErrTaskNotFound), errors.Is(err, storage.ErrNotFound):
+	case errors.Is(err, agent.ErrTaskNotFound), errors.Is(err, storage.ErrNotFound), errors.Is(err, workspace.ErrFileNotFound):
 		writeErr(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, agent.ErrAlreadyRunning),
 		errors.Is(err, agent.ErrTaskNotPausable),
@@ -415,10 +598,16 @@ func writeTaskErr(w http.ResponseWriter, err error) {
 		errors.Is(err, agent.ErrSandboxNotClosable),
 		errors.Is(err, agent.ErrFlagNotReviewable),
 		errors.Is(err, agent.ErrPromptLocked),
+		errors.Is(err, agent.ErrAttachmentsLocked),
 		errors.Is(err, storage.ErrConflict),
 		errors.Is(err, storage.ErrInvalidStatus):
 		writeErr(w, http.StatusConflict, err.Error())
-	case errors.Is(err, storage.ErrInvalidInput):
+	case errors.Is(err, storage.ErrInvalidInput),
+		errors.Is(err, workspace.ErrInvalidPath),
+		errors.Is(err, workspace.ErrPathTraversal),
+		errors.Is(err, workspace.ErrSymlinkEscape),
+		errors.Is(err, workspace.ErrInvalidFilename),
+		errors.Is(err, workspace.ErrFileTooLarge):
 		writeErr(w, http.StatusBadRequest, err.Error())
 	default:
 		writeErr(w, http.StatusInternalServerError, err.Error())
