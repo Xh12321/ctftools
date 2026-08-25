@@ -1,5 +1,6 @@
 # Web 镜像继承公共 Pi 环境和跨方向资料库。
-FROM ctf-agent-pi-base:0.1.0
+ARG BASE_VERSION=0.1.0
+FROM ctf-agent-pi-base:${BASE_VERSION}
 
 # 以 root 安装侦察、目录枚举、SQL 注入和 HTTP/JWT 分析工具。
 USER root

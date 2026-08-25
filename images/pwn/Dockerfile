@@ -1,5 +1,6 @@
 # Pwn 镜像继承公共 Pi 环境和跨方向资料库。
-FROM ctf-agent-pi-base:0.1.0
+ARG BASE_VERSION=0.1.0
+FROM ctf-agent-pi-base:${BASE_VERSION}
 
 # 安装编译链、GDB、QEMU、ELF 修补与常用漏洞利用 Python 工具。
 USER root

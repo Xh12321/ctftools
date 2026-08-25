@@ -10,6 +10,8 @@ Build all profiles from the repository root:
 
 The default process is Pi RPC over stdin/stdout JSONL. The control plane overrides the model and session name for each task.
 
+The Docker build context is the repository root. `agents/` contains runtime behavior rules and `skills/` contains read-only reference material copied into the image. Use `../build.ps1` or this script from PowerShell; the profile images receive the same `-Version` through `BASE_VERSION`.
+
 Runtime policy:
 
 - `web`, `crypto`, `forensics`, `misc`, and static `reverse`: prefer `runsc`, fall back to constrained `runc` during local development.

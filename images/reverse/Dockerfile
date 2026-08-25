@@ -1,5 +1,6 @@
 # Reverse 镜像继承公共 Pi 环境和跨方向资料库。
-FROM ctf-agent-pi-base:0.1.0
+ARG BASE_VERSION=0.1.0
+FROM ctf-agent-pi-base:${BASE_VERSION}
 
 # 安装 APK/JVM、二进制检查、系统调用追踪、调试器和 angr 符号执行。
 USER root

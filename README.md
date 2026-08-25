@@ -203,7 +203,14 @@ MCP 工具
 
 本地优先的工具链:Wails + React,Go daemon,Docker,Pi RPC,SQLite,MCP Gateway
 
+## 当前开发状态
 
+仓库中的 `CTF-BTFly.exe` 和 `ctfagent-daemon.exe` 是 Windows 编译产物，只作为现有界面与接口行为参考；后续开发以可审计、可跨平台构建的源码为准。项目分析、已确认的 daemon 契约和分阶段路线见 [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)。
 
+镜像构建所需的公共规则和六个方向 Skill 位于 `agents/` 与 `skills/`。在安装 Docker 且已配置 Pi Agent 包源的开发机上，可以从仓库根目录执行：
 
+```powershell
+./build.ps1 -Version 0.1.0
+```
 
+第一条推荐竖切片是 Fake Agent：先验证“创建题目 → 事件流 → 状态暂停/恢复 → Flag 人工审核 → Writeup 归档”，再接入真实 Docker、Pi 和模型服务。

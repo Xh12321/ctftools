@@ -1,5 +1,6 @@
 # Crypto 镜像继承公共 Pi 环境和跨方向资料库。
-FROM ctf-agent-pi-base:0.1.0
+ARG BASE_VERSION=0.1.0
+FROM ctf-agent-pi-base:${BASE_VERSION}
 
 # 安装口令破解、任意精度数学、符号计算、密码算法和约束求解工具。
 USER root
