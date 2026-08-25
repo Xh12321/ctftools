@@ -207,10 +207,32 @@ MCP 工具
 
 仓库中的 `CTF-BTFly.exe` 和 `ctfagent-daemon.exe` 是 Windows 编译产物，只作为现有界面与接口行为参考；后续开发以可审计、可跨平台构建的源码为准。项目分析、已确认的 daemon 契约和分阶段路线见 [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)。
 
+### Milestone 1（已落地）
+
+无 Docker / 无真实模型即可测试的 Go daemon 核心已在源码树中：
+
+| 路径 | 职责 |
+| --- | --- |
+| `cmd/ctfagent-daemon` | 进程入口 |
+| `internal/platform` | 题型、状态机、事件常量、DTO |
+| `internal/storage` | SQLite 任务/事件/用量/设置 |
+| `internal/eventhub` | 按任务订阅与 `after` 序号过滤 |
+| `internal/agent` | 生命周期 + **FakeRunner** |
+| `internal/api` | 本地 HTTP API（Bearer token） |
+| `vendor/` | 离线依赖（纯 Go SQLite） |
+
+```bash
+go test -mod=mod ./internal/...
+go build -mod=mod -o bin/ctfagent-daemon ./cmd/ctfagent-daemon
+./bin/ctfagent-daemon -data-dir ~/.ctf-btfly -addr 127.0.0.1:7521
+```
+
+竖切片说明与接口表见 [`docs/MILESTONE1.md`](docs/MILESTONE1.md)。
+
 镜像构建所需的公共规则和六个方向 Skill 位于 `agents/` 与 `skills/`。在安装 Docker 且已配置 Pi Agent 包源的开发机上，可以从仓库根目录执行：
 
 ```powershell
 ./build.ps1 -Version 0.1.0
 ```
 
-第一条推荐竖切片是 Fake Agent：先验证“创建题目 → 事件流 → 状态暂停/恢复 → Flag 人工审核 → Writeup 归档”，再接入真实 Docker、Pi 和模型服务。
+下一条竖切片将接入工作区与 Docker 沙箱（Milestone 2），再接 Pi RPC 与模型网关（Milestone 3）。

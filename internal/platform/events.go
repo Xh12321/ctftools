@@ -1,0 +1,51 @@
+package platform
+
+// Well-known event type constants used across storage, hub and agent layers.
+const (
+	EventTaskCreated         = "task.created"
+	EventTaskQueued          = "task.queued"
+	EventTaskProvisioning    = "sandbox.provisioning"
+	EventTaskResumed         = "task.resumed"
+	EventTaskPaused          = "task.paused"
+	EventTaskCancelled       = "task.cancelled"
+	EventTaskFailed          = "task.failed"
+	EventTaskSettled         = "task.settled"
+	EventTaskPromptUpdated   = "task.prompt_updated"
+	EventTaskRetryRequested  = "task.retry_requested"
+	EventSandboxStarted      = "sandbox.started"
+	EventSandboxStopped      = "sandbox.stopped"
+	EventAgentStarted        = "agent.started"
+	EventAgentSettled        = "agent.settled"
+	EventAgentStderr         = "agent.stderr"
+	EventAgentTurnStarted    = "agent.turn_started"
+	EventAgentTurnCompleted  = "agent.turn_completed"
+	EventAgentMessageDelta   = "agent.message.delta"
+	EventAgentMessageDone    = "agent.message.completed"
+	EventAgentThinkingDelta  = "agent.thinking.delta"
+	EventAgentStreamError    = "agent.stream_error"
+	EventAgentProtocolError  = "agent.protocol_error"
+	EventToolStarted         = "tool.started"
+	EventToolCompleted       = "tool.completed"
+	EventToolOutput          = "tool.output"
+	EventFlagCandidate       = "flag.candidate"
+	EventFlagReviewed        = "flag.reviewed"
+	EventFlagDetectionError  = "flag.detection_error"
+	EventFlagWriteupRequired = "flag.writeup_required"
+	EventModelProbeStarted   = "model.probe_started"
+	EventModelProbeSucceeded = "model.probe_succeeded"
+	EventModelProbeFailed    = "model.probe_failed"
+	EventModelRequestFailed  = "model.request_failed"
+	EventDelegationStarted   = "delegation.started"
+	EventDelegationCancelled = "delegation.cancelled"
+	EventDelegationRejected  = "delegation.rejected"
+)
+
+// Well-known event source values.
+const (
+	SourceSystem = "system"
+	SourceAgent  = "agent"
+	SourceUser   = "user"
+	SourceTool   = "tool"
+	SourceSandbox = "sandbox"
+	SourceModel  = "model"
+)

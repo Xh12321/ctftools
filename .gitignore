@@ -29,3 +29,7 @@ coverage/
 Thumbs.db
 .vscode/
 .idea/
+
+# Go
+*.test
+*.out

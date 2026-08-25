@@ -108,13 +108,14 @@ queued ──▶ provisioning ──▶ running ──▶ settled
 - 提供公共 Agent 规则以及六个方向的最小 Skill 资料。
 - 明确目录边界、安全原则和第一版契约。
 
-### Milestone 1：无 Docker 也可测试的 daemon 核心
+### Milestone 1：无 Docker 也可测试的 daemon 核心 ✅
 
-- 建立 Go module 和 `internal/platform`：题型、任务状态、请求/响应、事件类型、ID 规则。
-- 建立 `internal/storage`：迁移、任务 CRUD、事件追加/分页、Flag 审核和用量统计。
-- 建立 `internal/eventhub`：按任务订阅、断线后使用 `after` 序号补齐。
-- 先用 fake sandbox/agent 做完整生命周期测试，保证业务状态机不绑定 Docker。
-
+- ✅ 建立 Go module 和 `internal/platform`：题型、任务状态、请求/响应、事件类型、ID 规则。
+- ✅ 建立 `internal/storage`：迁移、任务 CRUD、事件追加/分页、用量统计与设置。
+- ✅ 建立 `internal/eventhub`：按任务订阅、断线后使用 `after` 序号补齐。
+- ✅ FakeRunner + `internal/agent` 生命周期（start/pause/resume/abort/retry/close-sandbox/flag-feedback）。
+- ✅ 本地 HTTP API（`internal/api`）与 `cmd/ctfagent-daemon` 入口。
+- 细节见 [`docs/MILESTONE1.md`](MILESTONE1.md)。
 ### Milestone 2：沙箱与工作区
 
 - `WorkspaceManager` 只接受规范化相对路径；拒绝 `..`、绝对路径、符号链接逃逸和重复覆盖。
