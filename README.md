@@ -201,6 +201,8 @@ MCP 工具
 <img width="1616" height="973" alt="image" src="https://github.com/user-attachments/assets/99a65dcf-c060-4e04-930a-b00a71f688d7" />
 
 
+本地优先的工具链:Wails + React,Go daemon,Docker,Pi RPC,SQLite,MCP Gateway
+
 
 
 
